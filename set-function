@@ -1,0 +1,26 @@
+#!/bin/sh
+if [ "$#" -lt 1 ]; then
+  echo "usage: $0 function-name [executable] [creation role arn]"
+  exit 1
+fi
+
+functionName="${1}"
+executable="${2:-lambda}"
+zip=$(mktemp)
+rm "${zip}"
+echo Building executable \'"${executable}"\'
+# UPX can shrink further at the cost of some startup slowdown. However,
+# smaller executables will copy from S3->Lambda faster, so the reduction there
+# might offset UPX overhead. And in any case, this is all cold start stuff.
+# TODO: Think about this
+GOOS=linux CGO_ENABLED=0 go build -ldflags "-s -w" -o "${executable}" && zip "${zip}" "${executable}"
+echo Deploying code
+if [ "$(aws lambda get-function --function-name "${functionName}" 2>/dev/null)" ]; then
+  aws lambda update-function-code --function-name "${functionName}" --zip-file fileb://"${zip}" > /dev/null
+else
+  echo Function not found - creating new function
+  role="${3:-arn:aws:iam:$(aws sts get-caller-identity --output text --query 'Account'):role/lambda_basic_execution}"
+  # TODO: Allow specifying role
+  aws lambda create-function --function-name "${functionName}" --zip-file fileb://"${zip}" --runtime go1.x --handler lambda --role "${role}"
+fi
+rm "${zip}"
